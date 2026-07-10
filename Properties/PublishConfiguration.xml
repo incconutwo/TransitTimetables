@@ -17,6 +17,10 @@ Per line you opt in and set:
 Select any stop to open a printed-timetable departure board for every line that serves it, listed from the first departure of the day. Day-only and night-only lines only show and run the intervals that apply to them, and a night line is scheduled inside the night window.
 
 No timetable set = the line runs exactly like vanilla. Everything is controlled from the line's own info panel plus a floating departures board.
+
+Source (open source, MIT): https://github.com/AmicusDeus/TransitTimetables
+
+Made with Claude Code, Anthropic's agentic coding tool.
 	</LongDescription>
 	<!--Thumbnail-->
 	<Thumbnail Value="Properties/Thumbnail.png" />
@@ -37,7 +41,7 @@ No timetable set = the line runs exactly like vanilla. Everything is controlled 
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog Value="Initial public release." />
 	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->
-	<ExternalLink Type="" Url="" />
+	<ExternalLink Type="github" Url="https://github.com/AmicusDeus/TransitTimetables" />
 	<!--Supported values Public, Private, Unlisted-->
 	<AccessLevel Value="Public" />
 </Publish>

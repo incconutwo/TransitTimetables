@@ -27,3 +27,7 @@ Requires the official CS2 modding toolchain. `dotnet build -c Release` compiles 
 
 ## License
 [MIT](LICENSE).
+
+---
+
+*Made with [Claude Code](https://claude.com/claude-code), Anthropic's agentic coding tool.*
