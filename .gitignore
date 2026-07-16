@@ -7,3 +7,5 @@ UI/build/
 *.log
 DISPATCH.md
 tools/uitest/*.png
+# Internal maintainer handoff notes — local only, not published
+HANDOFF.md
