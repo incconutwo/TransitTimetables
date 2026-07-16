@@ -31,7 +31,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.2.2" />
+	<ModVersion Value="0.2.3" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -40,14 +40,17 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
-v0.2.2
+v0.2.3
 
-- The night window now defaults to 22:00-06:00, matching the game's own transport night. It previously defaulted to 22:00-05:00, which disagreed with the game by an hour every day: on a day-only line this mod would post departures for 05:00-06:00, an hour in which the game has already taken every vehicle off that line.
+- Vehicles depart on their scheduled minute again. v0.2 accidentally made a timetabled vehicle wait for passengers who were still walking up, which pushed departures past their posted time. That was never the intent: a timetable should keep the line ON time and let anyone who misses it take the next departure. Reverted.
 
-Your own setting is NOT touched. This only changes the starting value for new installs — if you have played with this mod before, your night window stays exactly as you left it. If you want the fix, drag "Night end" to 6 yourself.
+- Fixed a serious hidden problem, and repaired the damage. Until now this mod switched OFF each timetabled line's vehicle "unbunching" (the behaviour that keeps vehicles evenly spaced) — and that change was written permanently into your saved city. The game has no setting for unbunching and never restores it, so uninstalling this mod would have left those lines unable to space themselves out FOREVER, with nothing to explain it and no way to fix it. The mod no longer touches that setting at all (it turned out to be unnecessary), and it now REPAIRS any line a previous version affected.
 
-Previously, in v0.2.1:
-- Fixed a serious bug on day-only and night-only lines: a vehicle boarding near the end of its operating window could freeze at the stop for the rest of the day (up to 16 hours), with passengers aboard — and because a stop has only one boarding space, it also blocked every OTHER line serving that stop.
+  If you have used timetables before: load your city once with this version and save it, and your lines are repaired automatically.
+
+Previously:
+- v0.2.2 — the night window now defaults to 22:00-06:00 to match the game's own transport night (existing settings are untouched; drag "Night end" to 6 if you want it).
+- v0.2.1 — fixed a vehicle boarding near the end of a day-only/night-only line's window freezing at the stop for the rest of the day, blocking every other line serving that stop.
 	</ChangeLog>
 	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->
 	<ExternalLink Type="github" Url="https://github.com/AmicusDeus/TransitTimetables" />

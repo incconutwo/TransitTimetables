@@ -16,13 +16,34 @@ namespace TransitTimetables
     //
     //  1. FLEET: derived from the current window's headway (round-trip / interval) and applied via the vanilla
     //     vehicle-count policy (HourlyFleetSystem.TrySetLineFleet). The player sets departures, the fleet follows.
-    //  2. NO MID-ROUTE IDLE: zeroes TransportLine.m_UnbunchingFactor so the vehicle never waits at intermediate
-    //     stops to even out spacing — it leaves as soon as boarding/alighting completes.
-    //  3. TERMINUS HOLD (the timing point): the vehicle boarding at the first stop is held to the next scheduled
-    //     clock departure if it is EARLY (writes PublicTransport.m_DepartureFrame); if on-time or late it departs
-    //     immediately. Holding only at the terminus keeps it from blocking other lines mid-route (single-slot stops).
+    //  2. NO MID-ROUTE IDLE: the schedule itself supplies the spacing — the hold below OVERWRITES m_DepartureFrame
+    //     every tick, so vanilla's unbunching delay (which only feeds RouteUtils.CalculateDepartureFrame) can never
+    //     apply to a line we're holding. TransportLine.m_UnbunchingFactor is deliberately left at the prefab default
+    //     and never written: it is serialized, nothing in vanilla restores it, and no UI exposes it, so writing it
+    //     would outlive the mod. Earlier versions zeroed it; (2) in OnUpdate now heals that.
+    //  3. STOP HOLD (the timing point): each stop's boarding vehicle is held to that stop's next scheduled clock
+    //     departure if it is EARLY (writes PublicTransport.m_DepartureFrame); if on-time or late it departs
+    //     immediately. Only this line's own vehicles are ever touched (a shared stop's single boarding slot may hold
+    //     another line's bus), and a hold can never exceed one headway (see the clamp in HoldStop).
     //
     // Runs every 8 frames so it always re-asserts the hold before the vanilla 16-frame AI release.
+    //
+    // ============================ DESIGN DECISIONS — deliberate, NOT bugs ============================
+    // Both of these look like defects to anyone (or any audit) reading them cold. One already WAS mistaken for a bug
+    // and "fixed", which silently broke the timetable. Read this before changing either.
+    //
+    //  A. A VEHICLE DEPARTS ON ITS POSTED MINUTE AND NEVER WAITS FOR ANYONE. Once the scheduled minute arrives it
+    //     leaves — over a cim walking up, over a passenger still boarding. Waiting would drag the line off schedule,
+    //     and staying on schedule is the entire product. Stragglers take the next slot, exactly as with a real
+    //     printed timetable. Implemented by the frame-1800 cutoff in HoldStop's GO branch (see the note there).
+    //
+    //  B. SURPLUS VEHICLES FINISH THEIR LOOP — THEY NEVER ABANDON MID-ROUTE. When the headway widens (peak ->
+    //     off-peak) vanilla flags the highest-ODOMETER vehicles and would retire each one wherever it stands,
+    //     dumping its passengers. Block (3b) strips that flag back off every tick for any vehicle not on its final
+    //     approach, so it keeps serving; it may only go once it is back at the terminus, has completed a full
+    //     serving lap (m_LapServed), and another vehicle is covering this slot's departure. That is what stops the
+    //     deploy-then-instantly-recall yo-yo and the run of dead departure slots.
+    // ===============================================================================================
     public partial class TimetableDispatchSystem : GameSystemBase
     {
         private SimulationSystem m_Sim;
@@ -117,12 +138,25 @@ namespace TransitTimetables
                 anyEnabled = true;
                 enabledCount++;
 
-                // (2) never idle at intermediate stops
-                if (tl.m_UnbunchingFactor != 0f)
-                {
-                    tl.m_UnbunchingFactor = 0f;
-                    EntityManager.SetComponentData(line, tl);
-                }
+                // (2) Leave TransportLine.m_UnbunchingFactor at the PREFAB DEFAULT — and heal it if an older version
+                // of this mod zeroed it.
+                //
+                // Until v0.2.2 this zeroed the factor so a vehicle wouldn't idle mid-route to self-space. That was a
+                // serious mistake: m_UnbunchingFactor is SERIALIZED into the save (Game.Routes/TransportLine), NOTHING
+                // in vanilla ever restores it (the only assignment is the component's ctor from the prefab default,
+                // which runs once at creation), and NO UI anywhere exposes it. So uninstalling the mod — or the mod
+                // failing to load after a game patch — left those lines permanently unable to unbunch, invisibly and
+                // unrecoverably, looking exactly like a base-game bug.
+                //
+                // It is also unnecessary. Unbunching only ever feeds RouteUtils.CalculateDepartureFrame, i.e. it just
+                // inflates m_DepartureFrame at StartBoarding — and HoldStop now writes m_DepartureFrame
+                // authoritatively every 8 frames, so the factor cannot affect a line we are actively holding.
+                // Leaving it alone is strictly better: an out-of-service window (day-only line at night) now unbunches
+                // normally instead of staying silently crippled.
+                //
+                // RestoreUnbunching only writes when the value differs from the prefab default, so this is a no-op on
+                // a healthy line and a ONE-TIME repair on a save damaged by an earlier version.
+                RestoreUnbunching(line, tl);
 
                 // The line's day/night operating schedule — which intervals apply and when it runs.
                 int sched = LineSchedule.Of(EntityManager, line);
@@ -234,6 +268,13 @@ namespace TransitTimetables
                             // the terminus needs to send out next). Once a bus on final approach is flagged we KEEP it
                             // flagged (commit) even across the brief no-front gaps; a bus still out on the loop is
                             // deferred (flag cleared) and keeps serving.
+                            //
+                            // *** DESIGN DECISION B (see the header) — deliberate. Clearing vanilla's AbandonRoute on a
+                            // mid-route bus is the POINT, not an oversight: it makes the surplus finish its loop and
+                            // drop its passengers at the terminus instead of vanishing wherever it happened to be.
+                            // The deferral reliably wins the race — this system runs every 8 frames, the AI that
+                            // CONSUMES the flag (StartBoarding) every 16, and vanilla re-flags surplus only every 256,
+                            // so there are always two of our ticks between AI ticks. ***
                             if (onFinalApproach && lapServed.Contains(veh) && (flagged || slotCovered))
                             {
                                 if (!flagged) // lap done, back at the terminus, slot covered — assert; vanilla retires it here
@@ -420,24 +461,51 @@ namespace TransitTimetables
                 .Append(hold ? " HOLD]" : (overrun ? " GO-clamped]" : " GO]"));
             if (hold)
             {
-                // EARLY: hold until this stop's scheduled clock minute.
+                // EARLY: hold until this stop's scheduled clock minute — written AUTHORITATIVELY, not merely raised.
+                // Vanilla sets m_DepartureFrame at StartBoarding via RouteUtils.CalculateDepartureFrame, which folds in
+                // the line's unbunching delay and can land LATER than our slot; a raise-only write would let that value
+                // stand and the bus would miss its own timetable. Re-writing it every tick makes the unbunching factor
+                // irrelevant on a line we're holding — which is exactly why this mod no longer zeroes it (see (2)).
+                // Lowering the frame here (vs vanilla's unbunching-inflated one) cannot cut a boarding short: while
+                // we are HOLDING, StopBoarding still keeps the bus for a cim walking up (m_MaxBoardingDistance !=
+                // float.MaxValue, TransportCarAISystem:1263-1265) and for any passenger aboard who is not yet Ready
+                // (:1269-1278). Those guards are only bypassed by the frame-1800 cutoff, which the GO branch below
+                // uses ON PURPOSE once the scheduled minute arrives — see the design note there.
                 uint target = frame + (uint)(until * ScheduleMath.FramesPerMinute);
-                if (target > pt.m_DepartureFrame) { pt.m_DepartureFrame = target; EntityManager.SetComponentData(veh, pt); }
+                if (pt.m_DepartureFrame != target) { pt.m_DepartureFrame = target; EntityManager.SetComponentData(veh, pt); }
             }
             else
             {
-                // AT/PAST schedule (or a late bus at an intermediate stop): release NOW, but gracefully. Put
-                // m_DepartureFrame ONE frame in the past so vanilla's boarding gate opens (frame >= m_DepartureFrame)
-                // and the bus leaves as soon as normal boarding completes — WITHOUT the old frame-1800 offset, which
-                // tripped StopBoarding's 1800-frame cutoff (flag2) and departed over a cim still walking up to board (#7).
-                uint force = frame > 1u ? frame - 1u : 1u;
+                // AT/PAST SCHEDULE: DEPART NOW. Do not wait for anyone.
+                //
+                // *** DESIGN DECISION — deliberate. This is NOT a bug; do not "fix" it. ***
+                // A timetabled vehicle leaves on its posted minute and never holds for a straggler. Waiting would push
+                // the whole line off its schedule, which is the single thing this mod exists to prevent — a real
+                // timetable does not hold the 08:15 for someone jogging up the platform. Whoever misses it takes the
+                // next slot. That is the point: the buses stay ON the timetable.
+                // History: v0.2 changed this to frame-1 (a "graceful" release) because an audit read the dropped cim
+                // as a defect. It isn't — the audit could not know the intent. That change silently reintroduced
+                // schedule slip on every departure and was reverted in v0.2.3.
+                //
+                // Mechanism: writing m_DepartureFrame >= 1800 frames into the PAST trips StopBoarding's cutoff
+                // (flag2, TransportCarAISystem:1262). That is the ONLY lever that clears BOTH guards which would
+                // otherwise delay us: it forces m_MaxBoardingDistance = float.MaxValue (:1263, so an approaching cim
+                // no longer holds the bus) AND skips the passenger-Ready wait (:1269-1278). frame-1 opens only the
+                // m_DepartureFrame gate and leaves both guards armed — hence the slip. 1800 is vanilla's own
+                // ~10-minute anti-softlock threshold; we borrow it because it is the only way to reach that branch.
+                uint force = frame > 1800u ? frame - 1800u : 1u;
                 if (pt.m_DepartureFrame > force) { pt.m_DepartureFrame = force; EntityManager.SetComponentData(veh, pt); }
             }
         }
 
-        // Release any bus this line was holding (future m_DepartureFrame) so it departs immediately once the timetable
-        // is switched off, instead of idling at the platform until the stale scheduled frame arrives (#8). Graceful:
-        // one frame in the past (not a hard cutoff), so vanilla finishes normal boarding before departing.
+        // Release any bus this line was holding (future m_DepartureFrame) so it departs once the timetable is switched
+        // off, instead of idling at the platform until the stale scheduled frame arrives (#8).
+        //
+        // Deliberately frame-1 (GRACEFUL), NOT the frame-1800 cutoff the GO branch uses — do not "harmonize" them.
+        // They serve opposite purposes: the GO branch is ENFORCING a timetable, so it must depart over stragglers
+        // (design decision A). This path is HANDING THE LINE BACK to vanilla, so it must only undo our own hold and
+        // then let normal boarding behave exactly as vanilla would. Forcing a departure here would be us overriding
+        // the game on a line we no longer manage.
         private void ReleaseHeldVehicles(Entity line, uint frame)
         {
             if (!EntityManager.HasBuffer<RouteVehicle>(line))
@@ -512,7 +580,9 @@ namespace TransitTimetables
             }
         }
 
-        // On disable, put the line's spacing behaviour back to the prefab default.
+        // Put the line's spacing behaviour back to the prefab default. Called for EVERY timetabled line (enabled or
+        // not), so it doubles as the one-time repair for a save damaged by a pre-v0.2.3 version that zeroed the field.
+        // Only writes when the value actually differs, so it is a no-op on a healthy line.
         private void RestoreUnbunching(Entity line, TransportLine tl)
         {
             if (!EntityManager.HasComponent<PrefabRef>(line))
@@ -523,6 +593,10 @@ namespace TransitTimetables
             float def = EntityManager.GetComponentData<TransportLineData>(prefab).m_DefaultUnbunchingFactor;
             if (tl.m_UnbunchingFactor != def)
             {
+                // Logged because this is otherwise INVISIBLE: the game exposes no UI for unbunching, so without a line
+                // in the log there is no way to confirm a damaged save was repaired. Fires once per line, then never.
+                Mod.log.Info($"[SelfTest] unbunching restored on line#{line.Index}: {tl.m_UnbunchingFactor} -> {def} " +
+                             $"(repairing a value written by an older version of this mod)");
                 tl.m_UnbunchingFactor = def;
                 EntityManager.SetComponentData(line, tl);
             }
