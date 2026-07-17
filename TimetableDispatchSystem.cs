@@ -66,6 +66,21 @@ namespace TransitTimetables
         // the [SelfTest] cadence — one WARN is a signal, one every 8 frames is noise.
         private uint m_LastClampWarn;
 
+        // PER-VEHICLE SLOT (issue #4): the sim FRAME at which each vehicle is scheduled to depart the TERMINUS on its
+        // current run. Holding a bus to ITS slot (shifted by each stop's offset) — rather than to "the next slot after
+        // now" — means a bus that falls slightly behind rides its own slot LATE instead of being bumped to the next
+        // cycle and stranded for a whole interval. A frame (not a minute) so comparisons are monotonic across midnight.
+        // Keyed by vehicle Entity (globally unique); pruned each tick against m_LiveVehScratch so despawned buses drop.
+        private readonly Dictionary<Entity, uint> m_RunSlotFrame = new Dictionary<Entity, uint>();
+        private readonly HashSet<Entity> m_LiveVehScratch = new HashSet<Entity>();
+
+        // Minimum stop dwell (minutes) for a bus that arrives ON its slot or LATE, so it still boards/offloads instead
+        // of being force-departed the instant it pulls in. Early buses are unaffected (they board during their hold).
+        private const int kMinDwellMinutes = 2;
+        // The frame each vehicle started boarding its CURRENT stop. Presence == "boarding now"; stamped on the first
+        // tick boarding and dropped when it leaves (so the same stop next loop re-stamps). Feeds HoldStop's min-dwell.
+        private readonly Dictionary<Entity, uint> m_ArrivedFrame = new Dictionary<Entity, uint>();
+
         // Read by VehicleLimitSystem to auto-uncap the vehicle ceiling while any line is timetabled.
         public static bool TimetableInUse;
 
@@ -111,6 +126,7 @@ namespace TransitTimetables
             bool anyEnabled = false;
             int enabledCount = 0;
             string sample = null;
+            m_LiveVehScratch.Clear(); // repopulated in the drain below, then used to prune m_RunSlotFrame (issue #4)
             for (int i = 0; i < lines.Length; i++)
             {
                 Entity line = lines[i];
@@ -257,7 +273,16 @@ namespace TransitTimetables
                         if (veh == Entity.Null || !EntityManager.HasComponent<PublicTransport>(veh))
                             continue;
                         live.Add(veh);
+                        m_LiveVehScratch.Add(veh); // union of all live vehicles -> prunes m_RunSlotFrame after the loop
                         liveCount++;
+                        // Arrival stamp for HoldStop's min-dwell: presence in m_ArrivedFrame == "currently boarding,
+                        // arrived at this frame". Stamp on the first boarding tick; drop when it leaves the stop so the
+                        // next stop (or the same stop next loop) re-stamps a fresh arrival.
+                        if ((EntityManager.GetComponentData<PublicTransport>(veh).m_State & PublicTransportFlags.Boarding) != 0)
+                        {
+                            if (!m_ArrivedFrame.ContainsKey(veh)) m_ArrivedFrame[veh] = frame;
+                        }
+                        else m_ArrivedFrame.Remove(veh);
                         if (EntityManager.HasComponent<Target>(veh)
                             && EntityManager.GetComponentData<Target>(veh).m_Target != terminusWaypoint)
                             lapServed.Add(veh);
@@ -329,6 +354,9 @@ namespace TransitTimetables
             PruneToLive(m_LastFleet, m_LiveScratch, m_StaleScratch);
             PruneToLive(m_PendingRetire, m_LiveScratch, m_StaleScratch);
             PruneToLive(m_LapServed, m_LiveScratch, m_StaleScratch);
+            // Drop per-vehicle slots for buses that despawned/retired (m_LiveVehScratch = every live vehicle this tick).
+            PruneToLive(m_RunSlotFrame, m_LiveVehScratch, m_StaleScratch);
+            PruneToLive(m_ArrivedFrame, m_LiveVehScratch, m_StaleScratch);
 
             lines.Dispose();
 
@@ -383,6 +411,11 @@ namespace TransitTimetables
                     if (rv[i].m_Vehicle != Entity.Null) lineVehicles.Add(rv[i].m_Vehicle);
             }
 
+            // Last tick's lap-served set (buses seen AWAY from the terminus). At the terminus HoldStop uses it to tell a
+            // bus that has COMPLETED a lap (reassign it the next slot) from one that merely hasn't left yet (keep its
+            // slot, depart late). May be null on a line's first managed tick — treated as "nobody has lapped".
+            m_LapServed.TryGetValue(line, out HashSet<Entity> lapServed);
+
             // Start accumulating at the terminus waypoint (the schedule's timing anchor); fall back to index 0.
             int start = 0;
             if (terminusWaypoint != Entity.Null)
@@ -410,7 +443,7 @@ namespace TransitTimetables
                     if (stop != Entity.Null && EntityManager.HasComponent<BoardingVehicle>(stop))
                     {
                         boarding = true;
-                        HoldStop(s, sch, sched, stop, frame, nowMin, offMin, stop == terminusStop, lineVehicles, diag);
+                        HoldStop(s, sch, sched, stop, frame, nowMin, offMin, stop == terminusStop, lineVehicles, lapServed, diag);
                     }
                 }
                 if (diag != null && !boarding)
@@ -440,7 +473,7 @@ namespace TransitTimetables
         // frame < m_DepartureFrame the boarding vehicle stays), not just the terminus.
         // When diag != null, appends this stop's decision (or skip reason) to the route's [SelfTest] dump.
         private void HoldStop(Setting s, TimetableSchedule sch, int sched, Entity stop, uint frame, int nowMin,
-            int offMin, bool isTerminus, HashSet<Entity> lineVehicles, System.Text.StringBuilder diag)
+            int offMin, bool isTerminus, HashSet<Entity> lineVehicles, HashSet<Entity> lapServed, System.Text.StringBuilder diag)
         {
             string tag = isTerminus ? "T" : "";
             Entity veh = EntityManager.GetComponentData<BoardingVehicle>(stop).m_Vehicle;
@@ -455,47 +488,95 @@ namespace TransitTimetables
             bool isEnRoute = (pt.m_State & PublicTransportFlags.EnRoute) != 0;
             if (!isBoarding || !isEnRoute)
             { diag?.Append(" [off").Append(offMin).Append(tag).Append(":brd").Append(isBoarding ? 1 : 0).Append("/enr").Append(isEnRoute ? 1 : 0).Append(']'); return; }
-            int nextDep = ScheduleMath.NextDeparture(s, sch, sched, nowMin - offMin) + offMin;
-            int until = nextDep - nowMin;
-
-            // A hold must never exceed ONE HEADWAY. That was assumed but never checked, and it is FALSE at an
-            // operating-window edge: near the end of a Day-only / Night-only line's window NextDeparture finds no
-            // further in-window slot and returns TOMORROW's first departure, so `until` becomes hundreds of minutes.
-            // The old code wrote that straight into m_DepartureFrame, freezing the bus at the kerb for 6-16 hours —
-            // squatting the stop's single BoardingVehicle slot (starving every other line there) with passengers
-            // aboard. Nothing could recover it: HoldAllStops' InService gate then early-returns past the boundary so
-            // we never revisit it, and vanilla only consumes AbandonRoute at the next StartBoarding, which a bus that
-            // can never stop boarding never reaches. Clamp instead: an over-long wait means "no slot left today", so
-            // release the bus rather than freeze it.
-            // Bound by the line's LONGEST configured headway, NOT by IntervalFor(now). Any real gap between two
-            // consecutive slots equals some IntervalFor(...) value, so it can never exceed the max — which makes this
-            // impossible to false-positive, while a runaway (hundreds of minutes) is still caught easily. A per-minute
-            // bound would misfire across a block boundary: a 04:50 night slot at interval 30 schedules 05:20, but
-            // IntervalFor(05:00) is the off-peak 12, so it would release a bus 20 min before its legitimate slot.
+            // === PER-VEHICLE SLOT (issue #4) ===
+            // Hold the bus to ITS OWN departure — the terminus slot it is running, shifted by this stop's cumulative
+            // travel+dwell offset — NOT to "the next slot after now". A bus a few minutes behind therefore rides its
+            // own slot LATE (departs immediately) instead of being bumped to the next cycle and stranded a whole
+            // interval. The slot is a monotonic sim FRAME (no midnight-wrap ambiguity), recorded when the bus boards
+            // the terminus and read as-is at every downstream stop of the same run.
             int maxInterval = ScheduleMath.MaxInterval(sch, sched);
+            bool haveSlot = m_RunSlotFrame.TryGetValue(veh, out uint slotFrame);
+            string slotSrc;
+            if (isTerminus)
+            {
+                // The terminus is the anchor. (Re)assign the next scheduled departure when the bus has no slot yet, or
+                // has COMPLETED a lap (it is in lapServed) AND its old slot is already past — i.e. it has come round
+                // for its next run. A bus still on its FIRST slot but merely late to LEAVE (past its slot, never
+                // lapped) KEEPS that slot and departs late; it must not grab a fresh one — that would be the very
+                // "wait a whole cycle" bug we are fixing.
+                bool lapped = lapServed != null && lapServed.Contains(veh);
+                if (!haveSlot || (lapped && frame >= slotFrame))
+                {
+                    int untilNext = ScheduleMath.NextDeparture(s, sch, sched, nowMin) - nowMin; // minutes to next slot
+                    if (untilNext >= 0 && untilNext <= maxInterval)
+                    {
+                        slotFrame = frame + (uint)(untilNext * ScheduleMath.FramesPerMinute);
+                        m_RunSlotFrame[veh] = slotFrame;
+                        slotSrc = "asg";
+                    }
+                    else
+                    {
+                        // No usable slot soon (operating-window edge): don't latch a far/garbage slot — release now.
+                        m_RunSlotFrame.Remove(veh);
+                        slotFrame = frame;
+                        slotSrc = "edge";
+                    }
+                }
+                else slotSrc = "keep";
+                haveSlot = true;
+            }
+            else if (haveSlot)
+            {
+                // Same run: this stop's scheduled departure is the terminus slot pushed forward by the stop's offset.
+                slotFrame += (uint)(offMin * ScheduleMath.FramesPerMinute);
+                slotSrc = "run";
+            }
+            else
+            {
+                // Downstream bus with no slot yet (spawned mid-line, or the first tick after enabling): fall back to
+                // the old next-slot-after-now guess. Self-corrects the next time this bus boards the terminus.
+                int g = ScheduleMath.NextDeparture(s, sch, sched, nowMin - offMin) + offMin - nowMin;
+                slotFrame = frame + (uint)((g > 0 ? g : 0) * ScheduleMath.FramesPerMinute);
+                slotSrc = "guess";
+            }
+
+            // DEPARTURE TARGET. A bus departs at:
+            //   - its SLOT, if it arrived EARLY (arrival < slot): it boarded during the hold, so leave ON TIME and
+            //     don't wait for a straggler (design A); OR
+            //   - ARRIVAL + a minimum dwell, if it arrived ON its slot or LATE (arrival >= slot): it has had no
+            //     boarding time, so give it a minimum stop to board/offload, then leave (user request).
+            // i.e. depart = max(slot, arrival + minDwell), branched so "early" is strictly arrival < slot. `arrived`
+            // is the frame the bus started boarding this stop (m_ArrivedFrame, stamped in the drain); fall back to now
+            // for the first tick before the stamp lands. Dwell is capped at one headway so a sub-2-min line can't jam.
+            uint arrived = m_ArrivedFrame.TryGetValue(veh, out uint af) ? af : frame;
+            int dwellMin = System.Math.Min(kMinDwellMinutes, maxInterval);
+            uint target = arrived < slotFrame ? slotFrame : arrived + (uint)(dwellMin * ScheduleMath.FramesPerMinute);
+            bool dwelling = arrived >= slotFrame; // holding for the min-dwell, not for an early slot (diagnostics only)
+
+            long dframes = (long)target - frame;                                    // >0 -> hold/dwell; <=0 -> depart
+            int until = (int)System.Math.Round((double)dframes / ScheduleMath.FramesPerMinute);
+
+            // Safety net: a hold should never exceed one headway. With per-vehicle slots this rarely fires (a bus is
+            // measured against its OWN near departure, not a distant clock slot), but it still catches a window-edge
+            // terminus assignment or a schedule-math regression — release rather than freeze (the 6-16h kerb-freeze,
+            // v0.2.1). The dwell branch is capped at one headway above, so only the slot branch can overrun.
             bool overrun = until > maxInterval;
-            bool hold = until > 0 && !overrun;
+            bool hold = dframes > 0 && !overrun;
             if (overrun && frame - m_LastClampWarn >= 16384u)
             {
                 m_LastClampWarn = frame;
                 Mod.log.Warn($"[SelfTest] hold clamped: until={until}m exceeds max headway={maxInterval}m at off={offMin} " +
-                             $"(operating-window edge, or a schedule-math regression) — releasing the bus instead of freezing it");
+                             $"(src={slotSrc}; window edge or a schedule-math regression) — releasing instead of freezing");
             }
-            diag?.Append(" [off").Append(offMin).Append(tag).Append(":dep").Append(nextDep).Append(" until").Append(until)
-                .Append(hold ? " HOLD]" : (overrun ? " GO-clamped]" : " GO]"));
+            diag?.Append(" [off").Append(offMin).Append(tag).Append(':').Append(slotSrc).Append(" until").Append(until)
+                .Append(hold ? (dwelling ? " DWELL]" : " HOLD]") : (overrun ? " GO-clamped]" : " GO]"));
             if (hold)
             {
-                // EARLY: hold until this stop's scheduled clock minute — written AUTHORITATIVELY, not merely raised.
-                // Vanilla sets m_DepartureFrame at StartBoarding via RouteUtils.CalculateDepartureFrame, which folds in
-                // the line's unbunching delay and can land LATER than our slot; a raise-only write would let that value
-                // stand and the bus would miss its own timetable. Re-writing it every tick makes the unbunching factor
-                // irrelevant on a line we're holding — which is exactly why this mod no longer zeroes it (see (2)).
-                // Lowering the frame here (vs vanilla's unbunching-inflated one) cannot cut a boarding short: while
-                // we are HOLDING, StopBoarding still keeps the bus for a cim walking up (m_MaxBoardingDistance !=
-                // float.MaxValue, TransportCarAISystem:1263-1265) and for any passenger aboard who is not yet Ready
-                // (:1269-1278). Those guards are only bypassed by the frame-1800 cutoff, which the GO branch below
-                // uses ON PURPOSE once the scheduled minute arrives — see the design note there.
-                uint target = frame + (uint)(until * ScheduleMath.FramesPerMinute);
+                // EARLY -> hold to slot; ON-SLOT/LATE -> hold through the min-dwell. Either way write the target frame
+                // AUTHORITATIVELY (overrides vanilla's unbunching-inflated value); this cannot cut a boarding short —
+                // while held, StopBoarding keeps the bus for a cim walking up (m_MaxBoardingDistance != MaxValue,
+                // TransportCarAISystem:1263-1265) and for a not-yet-Ready passenger (:1269-1278). Those guards are
+                // bypassed only by the frame-1800 cutoff, which the GO branch below uses on purpose once time is up.
                 if (pt.m_DepartureFrame != target) { pt.m_DepartureFrame = target; EntityManager.SetComponentData(veh, pt); }
             }
             else

@@ -31,7 +31,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.2.5" />
+	<ModVersion Value="0.2.6" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -40,7 +40,13 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
-v0.2.5 — the timetable panel
+v0.2.6 — late buses no longer wait a whole cycle
+
+- A vehicle that arrived at a stop just a minute or two behind its scheduled time used to wait for the NEXT departure — a full interval (up to an hour on infrequent lines). Now each vehicle carries its own scheduled run: if it's a little late, it just continues on its own schedule instead of being bumped to the next cycle. (Thanks to Bananex3000 and FutureProg for reporting.)
+- A vehicle that arrives on time or late now gets a minimum 2-minute stop to board and drop off passengers, instead of being sent off the instant it pulls in. Early vehicles still leave exactly on their scheduled minute.
+- Fixed: the "Departures" tip stayed on screen after you clicked a transport line. It now closes. (Thanks to hkkongou for reporting.)
+
+Previously, in v0.2.5 — the timetable panel
 
 - Every row now adjusts the same way: -10 / -1 / value / +1 / +10. First departure lands on any exact minute (it used to jump in 15s, so 06:05 or 07:25 were impossible), and each interval gains -10 / +10 so reaching something like 16 minutes is a couple of clicks instead of sixteen. First departure also wraps around midnight instead of sticking at 00:00.
 

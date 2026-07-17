@@ -248,6 +248,15 @@ export const TransitPanelHost = () => {
         }
     }, [auto]);
 
+    // Close the panel when the selection stops being a stop — e.g. the player clicks a transport LINE — so the
+    // empty "select a stop" hint doesn't linger over an unrelated panel (issue #3). Only the true->false transition
+    // closes it, so a panel opened from the toolbar button while nothing is selected still shows its hint.
+    const prevStopHas = useRef(stopHas);
+    useEffect(() => {
+        if (prevStopHas.current && !stopHas) setOpen(false);
+        prevStopHas.current = stopHas;
+    }, [stopHas]);
+
     if (!open) {
         // Closed but a stop is still selected: keep a slim reopen bar. Re-clicking the SAME stop can't reopen the
         // panel (the game fires no reselect event for an already-selected entity), so offer this affordance instead.
