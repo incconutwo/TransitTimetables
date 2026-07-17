@@ -57,6 +57,18 @@ const stepBtn = {
     background: "rgba(255,255,255,0.12)", borderRadius: "4rem",
 } as const;
 
+// Coarse step (±1h on the clock, ±10 on an interval) — wider so a two-character label fits, smaller type so it sits
+// level with the ± glyphs. Paired with stepBtn everywhere: coarse outside, fine inside, value in the middle.
+const stepBtnCoarse = {
+    cursor: "pointer", width: "30rem", height: "22rem", fontSize: "11rem", color: "white",
+    background: "rgba(255,255,255,0.12)", borderRadius: "4rem",
+} as const;
+
+// First departure is a CLOCK time, so stepping WRAPS rather than clamping: -5 from 00:00 gives 23:55, which is how
+// you reach a late-night first departure without 280 clicks. The C# trigger clamps to 0..1439 anyway, and this is
+// already normalized into that range, so the clamp is a no-op.
+const wrapMin = (v: number) => ((Math.round(v) % 1440) + 1440) % 1440;
+
 // Native close button: the game's Close glyph as a mask tinted with the panel text colour (matches the native
 // panels, which use url(Media/Glyphs/...) masks — not a literal "X"). pointerEvents:auto for reliable clicks.
 const CloseGlyph = ({ onClick }: { onClick: () => void }) => (
@@ -82,9 +94,15 @@ const IntervalRow = ({ label, hours, value$, trig }: { label: string; hours?: st
                 <div style={{ fontSize: "13rem" }}>{label}</div>
                 {hours ? <div style={{ fontSize: "10rem", opacity: 0.5 }}>{hours}</div> : null}
             </div>
+            {/* ±10 keeps a two-digit headway cheap to reach (16 min = +10 then +1 x6, not sixteen clicks), while ±1
+                still lands on any exact minute. Adds/subtracts a flat 10 rather than snapping to a multiple of it, so
+                the ones digit you dialled in survives: 16 -> 26 -> 16. `set` already clamps at 1. Margins, not `gap`
+                (cohtml has no flex gap). Mirrors the First departure row above: coarse outside, fine inside. */}
+            <button style={{ ...stepBtnCoarse, marginRight: "5rem" }} onClick={() => set(v - 10)}>−10</button>
             <button style={stepBtn} onClick={() => set(v - 1)}>−</button>
             <div style={{ width: "54rem", textAlign: "center", fontSize: "13rem" }}>{Math.round(v)} min</div>
             <button style={stepBtn} onClick={() => set(v + 1)}>+</button>
+            <button style={{ ...stepBtnCoarse, marginLeft: "5rem" }} onClick={() => set(v + 10)}>+10</button>
         </div>
     );
 };
@@ -129,11 +147,17 @@ export const TimetableEditor = () => {
                     <div style={{ fontSize: "12rem", opacity: 0.7, marginBottom: "6rem" }}>
                         {t("ttNext", "next: {n}", { n: next || "—" })}
                     </div>
+                    {/* Two granularities on purpose: ±5 lands on any five-minute mark (±15 could never reach :05 or
+                        :10), while ±1h keeps big moves cheap — 00:00 -> 05:00 is 5 clicks, not 60. */}
                     <div style={{ display: "flex", alignItems: "center", padding: "3rem 0" }}>
                         <div style={{ flex: 1, fontSize: "13rem" }}>{t("firstDeparture", "First departure")}</div>
-                        <button style={stepBtn} onClick={() => trigger(G, "setSelTtFirst", Math.max(0, first - 15))}>−</button>
+                        {/* Margins, not `gap`: the game's cohtml UI doesn't support flex gap. The hour buttons are
+                            separated from the ± pair so the coarse and fine controls read as two groups. */}
+                        <button style={{ ...stepBtnCoarse, marginRight: "5rem" }} onClick={() => trigger(G, "setSelTtFirst", wrapMin(first - 60))}>−1h</button>
+                        <button style={stepBtn} onClick={() => trigger(G, "setSelTtFirst", wrapMin(first - 5))}>−</button>
                         <div style={{ width: "54rem", textAlign: "center", fontSize: "13rem" }}>{hm(first)}</div>
-                        <button style={stepBtn} onClick={() => trigger(G, "setSelTtFirst", Math.min(1439, first + 15))}>+</button>
+                        <button style={stepBtn} onClick={() => trigger(G, "setSelTtFirst", wrapMin(first + 5))}>+</button>
+                        <button style={{ ...stepBtnCoarse, marginLeft: "5rem" }} onClick={() => trigger(G, "setSelTtFirst", wrapMin(first + 60))}>+1h</button>
                     </div>
                     {showDay ? <IntervalRow label={t("peakInterval", "Peak")} hours={peakHrs} value$={selTtPeak$} trig="setSelTtPeak" /> : null}
                     {showDay ? <IntervalRow label={t("offPeakInterval", "Off-peak")} hours={t("otherHours", "other hours")} value$={selTtOffPeak$} trig="setSelTtOffPeak" /> : null}

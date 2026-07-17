@@ -31,7 +31,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.2.3" />
+	<ModVersion Value="0.2.4" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -40,7 +40,12 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
-v0.2.3
+v0.2.4 — easier time and interval setting
+
+- First departure now steps in 5 minutes instead of 15, so you can finally set times like 06:05 or 07:25. New -1h / +1h buttons keep big changes quick, and it now wraps around midnight instead of sticking at 00:00 (so a late-night first departure is a couple of clicks down, not a trip through the whole day).
+- Each interval (peak / off-peak / night) gains -10 / +10 buttons next to the -1 / +1, so reaching something like 16 minutes takes a couple of clicks instead of sixteen.
+
+Previously, in v0.2.3
 
 - Vehicles depart on their scheduled minute again. v0.2 accidentally made a timetabled vehicle wait for passengers who were still walking up, which pushed departures past their posted time. That was never the intent: a timetable should keep the line ON time and let anyone who misses it take the next departure. Reverted.
 
