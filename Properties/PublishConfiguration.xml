@@ -31,7 +31,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.2.8" />
+	<ModVersion Value="0.2.81" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -40,7 +40,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
-v0.2.8 — works with Realistic Trips (Time2Work), plus terminus points at stations
+v0.2.81 (alpha) — works with Realistic Trips (Time2Work), plus terminus points at stations
 
 - NEW (ALPHA): compatibility with slow-time mods like Realistic Trips / Time2Work. A new setting, "Adapt to slow-time mods" (ON by default), measures the real length of a day at runtime, so on a stretched clock your departures, stop times and vehicle counts stay correct instead of running early. With no such mod installed it changes nothing at all. IMPORTANT: this compatibility path has NOT been tested in-game against Realistic Trips yet — it is an alpha; please report anything odd. Under Realistic Trips your timetabled lines will correctly run fewer vehicles than before.
 
